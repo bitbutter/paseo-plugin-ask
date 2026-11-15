@@ -128,12 +128,20 @@ export default function (pi: ExtensionAPI) {
   // a refusal (anti-stacking).
   const liveAsks = new Set<string>();
 
-  // The user typed in the composer instead of tapping the card. While a
-  // question is open the turn is blocked, so the typed text arrives as a
-  // steer: close the question as overtaken now (guarded write). The pending
-  // tool call returns within a poll interval and the steered text delivers
-  // right after the tool call, so the model reads the actual message.
-  pi.on("input", async (event) => {
+  // Live view of the session's pending-message queue, captured from any
+  // event context. A composer message sent while the turn is blocked steers
+  // into pi and sits in this queue until the turn's tool calls finish; the
+  // ask_user poll checks it so typing overtakes the question immediately.
+  let hasPendingMessages: (() => boolean) | null = null;
+  const captureCtx = (ctx: { hasPendingMessages: () => boolean }) => {
+    hasPendingMessages = () => ctx.hasPendingMessages();
+  };
+  pi.on("session_start", (_event, ctx) => captureCtx(ctx));
+
+  // Backstop at steer-delivery time (turn boundary): if a question is still
+  // open when the steered text is finally delivered, close it as overtaken.
+  pi.on("input", async (event, ctx) => {
+    captureCtx(ctx);
     if (event.source === "extension") return;
     const open = readSpool(agentId);
     if (open && !open.question.answered) {
@@ -230,6 +238,13 @@ export default function (pi: ExtensionAPI) {
           if (signal.aborted) {
             closeIfStillOpen(agentId, file.question, CANCELLED_MARKER);
             return { content: [{ type: "text", text: "ask_user: cancelled before the user answered." }], isError: true };
+          }
+          // The user typed in the composer instead of tapping the card: the
+          // message steers into pi and queues behind this tool call. Close the
+          // question as overtaken; the poll below reads the marker and returns,
+          // and the steered text delivers to the model right after this call.
+          if (hasPendingMessages && hasPendingMessages()) {
+            closeIfStillOpen(agentId, file.question, OVERTAKEN_MARKER);
           }
           const current = readSpool(agentId);
           if (current && current.question.id === id && current.question.answered && current.question.answer) {
