@@ -53,10 +53,19 @@ function readSpool(agentId: string): AskSpoolFile | null {
 function writeSpool(agentId: string, file: AskSpoolFile): void {
   mkdirSync(SPOOL_DIR, { recursive: true });
   const path = spoolPath(agentId);
-  const tmp = `${path}.tmp`;
+  // Pid-unique tmp name: the extension process writes the same spool file and
+  // a shared tmp path races (renameSync ENOENT) or corrupts the write (roast r7).
+  const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(file));
   renameSync(tmp, path);
 }
+
+// Question ids whose OPEN row this watcher run appended; shared with the RPC
+// handlers so terminal flips only target rows that are actually visible.
+// After a daemon restart rows are gone, and appending a terminal state would
+// CREATE a stale card at the bottom instead of flipping one (roast r6/r7:
+// expire, overtake, and ask.test paths all needed this gate).
+const openAppendedIds = new Set<string>();
 
 async function appendRow(paseo: PaseoApi, question: AskQuestionData): Promise<void> {
   await paseo.agents.ref(question.agentId).timeline.append({
@@ -131,7 +140,7 @@ export function registerAskHandlers(server: PluginServerContext): void {
       // not linger as a clickable card. closeQuestion re-validates; if it
       // raced against a newer writer, that writer wins and we skip.
       const closed = closeQuestion(agentId, existing.question, SUPERSEDED_MARKER);
-      if (closed) {
+      if (closed && openAppendedIds.has(closed.id)) {
         try {
           await appendRow(ctx.paseo, closed);
         } catch {
@@ -173,11 +182,21 @@ export function registerAskHandlers(server: PluginServerContext): void {
       answered: false,
     };
     // The awaited appendRow above yielded the event loop: a live ask_user
-    // in the extension process may have claimed the spool since our read.
-    // Never clobber it; the newest question always wins (roast r6).
+    // in the extension process may have claimed the spool since our read,
+    // or the human may have answered the old question mid-window. Proceed
+    // only when the spool still holds exactly what we left (no file, or our
+    // own superseded marker); never clobber anything newer (roast r7).
     const latest = readSpool(agentId);
-    if (existing && latest && latest.question.id !== existing.question.id) {
-      throw new Error(`ask.test: a newer question (${latest.question.id}) is live; not overwriting it`);
+    const spoolStillOurs = existing
+      ? Boolean(
+          latest &&
+            latest.question.id === existing.question.id &&
+            latest.question.answered &&
+            latest.question.answer?.other === SUPERSEDED_MARKER,
+        )
+      : !latest;
+    if (!spoolStillOurs) {
+      throw new Error(`ask.test: the spool changed during the test setup (newer question or answer landed); not overwriting it`);
     }
     writeSpool(agentId, { v: 1, question });
     await appendRow(ctx.paseo, question);
@@ -204,11 +223,8 @@ export function startAskWatcher(server: PluginServerContext): () => void {
   };
   // agentId -> { id, at } of the last successful row append
   const appended = new Map<string, { id: string; at: number }>();
-  // Question ids whose OPEN row this watcher run appended. The closed-card
-  // flip only applies to these: rows from before a daemon restart are gone
-  // from the timeline, and re-appending them would CREATE a stale card at
-  // the bottom instead of replacing one (identity absent = insert).
-  const openAppendedIds = new Set<string>();
+  // Question ids whose OPEN row this watcher run appended (module-level
+  // openAppendedIds is shared with the RPC handlers; see its comment).
   // agentId -> question id whose CLOSED state has been appended once, so
   // file-only terminal writes (extension timeout/cancel/supersede) still
   // flip their card instead of lingering as open and tappable
@@ -216,17 +232,26 @@ export function startAskWatcher(server: PluginServerContext): () => void {
 
   // Close an open question as overtaken (guarded, best-effort row flip).
   const overtakeIfOpen = async (paseo: PaseoApi | null, agentId: string | null | undefined) => {
-    if (!paseo || !agentId) return;
-    const file = readSpool(agentId);
-    if (!file || file.question.answered) return;
-    const closed = closeQuestion(agentId, file.question, OVERTAKEN_MARKER);
-    if (!closed) return;
-    console.log(`[ask] question ${closed.id} for ${agentId} overtaken (new turn/message)`);
     try {
-      await appendRow(paseo, closed);
-      closedAppended.set(agentId, closed.id);
-    } catch {
-      /* cosmetic; the file is terminal either way */
+      if (!paseo || !agentId) return;
+      const file = readSpool(agentId);
+      if (!file || file.question.answered) return;
+      const closed = closeQuestion(agentId, file.question, OVERTAKEN_MARKER);
+      if (!closed) return;
+      console.log(`[ask] question ${closed.id} for ${agentId} overtaken (new turn/message)`);
+      // Gate on openAppendedIds: after a daemon restart the open row is gone
+      // and an unconditional append would CREATE a stale "(overtaken)" card
+      // at the bottom (roast r7).
+      if (openAppendedIds.has(closed.id)) {
+        try {
+          await appendRow(paseo, closed);
+          closedAppended.set(agentId, closed.id);
+        } catch {
+          /* cosmetic; the file is terminal either way */
+        }
+      }
+    } catch (e) {
+      console.error(`[ask] overtake failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
   // agentId -> { id, at } of the last failed append
@@ -362,7 +387,9 @@ export function startAskWatcher(server: PluginServerContext): () => void {
       }
     }
   };
-  const timer = setInterval(() => void tick(), POLL_MS);
+  const timer = setInterval(() => {
+    tick().catch((e) => console.error(`[ask] tick failed: ${e instanceof Error ? e.message : String(e)}`));
+  }, POLL_MS);
   void tick();
   return () => clearInterval(timer);
 }

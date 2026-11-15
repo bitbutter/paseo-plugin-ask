@@ -69,7 +69,9 @@ function readSpool(agentId: string): SpoolFile | null {
 function writeSpool(agentId: string, file: SpoolFile): void {
   mkdirSync(SPOOL_DIR, { recursive: true });
   const path = spoolPath(agentId);
-  const tmp = `${path}.tmp`;
+  // Pid-unique tmp name: the daemon plugin writes the same spool file and a
+  // shared tmp path races (renameSync ENOENT) or corrupts the write (roast r7).
+  const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(file));
   renameSync(tmp, path);
 }
@@ -143,9 +145,13 @@ export default function (pi: ExtensionAPI) {
   pi.on("input", async (event, ctx) => {
     captureCtx(ctx);
     if (event.source === "extension") return;
-    const open = readSpool(agentId);
-    if (open && !open.question.answered) {
-      closeIfStillOpen(agentId, open.question, OVERTAKEN_MARKER);
+    try {
+      const open = readSpool(agentId);
+      if (open && !open.question.answered) {
+        closeIfStillOpen(agentId, open.question, OVERTAKEN_MARKER);
+      }
+    } catch {
+      // A fire-and-forget handler must never take the process down (roast r7).
     }
   });
 
