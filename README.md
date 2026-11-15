@@ -10,7 +10,7 @@ The custom card adds what the native question dialog does not have: multi-select
 
 ## How `ask_user` works
 
-The model calls `ask_user` with one short question and 2 to 6 options. The call blocks until the human answers or the timeout passes (default 24 hours, max 7 days), then returns the answer as the tool result. On timeout, the tool result tells the model to proceed with its best judgment.
+The model calls `ask_user` with one short question and 2 to 6 options. The call blocks until the human answers or the timeout passes (default 24 hours, max 7 days), then returns the answer as the tool result. On timeout, the tool result tells the model to proceed with its best judgment. Typing a message in the composer instead of tapping the card closes the question and tells the model to read the message.
 
 ## Question modes
 
@@ -40,6 +40,7 @@ Timeline rows are per question: a new question appends a fresh card, and an answ
 - `answered`: answered by the human. Submitting with nothing picked and no text is a valid empty answer, never a cancel.
 - `superseded`: replaced by a newer question from the same agent, which always wins. A question left open by a crashed process never blocks the next one.
 - `timed out`: reached its timeout before an answer arrived.
+- `overtaken`: the human typed a new message instead of answering; the pending question closes and the agent is told to act on the message.
 - `cancelled`: the turn was aborted.
 - `expired`: 8 days passed with no asking process left.
 
@@ -79,7 +80,9 @@ After installing both parts, type `/ask-test` in any agent's composer to append 
 
 Plugin timeline rows are live-only in the current Paseo app. A refetch can hide an open card until it is re-appended; open questions re-surface on that agent's next turn and every 5 minutes.
 
-After a daemon restart or plugin reload, the spool watcher does not start until an agent fires a session or turn event.
+After a daemon restart or plugin reload, the spool watcher does not start until an agent fires a session or turn event. Avoid rapid consecutive plugin reloads: reload once, between turns, or event delivery to the watcher can lag until the next turn boundary.
+
+A question ended by a cancel or a supersede can leave its card looking open. Tapping it reports the question is no longer open.
 
 ## License
 

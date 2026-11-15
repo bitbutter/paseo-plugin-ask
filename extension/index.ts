@@ -23,6 +23,7 @@ const DEFAULT_TIMEOUT_SEC = 24 * 60 * 60;
 // Terminal markers written into answer.other. SUPERSEDED_MARKER matches the
 // constant in paseo-plugin-ask/server/ask.ts (no imports across the two).
 const SUPERSEDED_MARKER = "(superseded by a newer question)";
+const OVERTAKEN_MARKER = "(user typed a message instead of answering)";
 const CANCELLED_MARKER = "(cancelled before an answer)";
 
 interface NormalizedOption {
@@ -75,8 +76,8 @@ function writeSpool(agentId: string, file: SpoolFile): void {
 
 // Close the question with a terminal marker, but only if the file still
 // holds exactly this question and it is still open (never clobber a newer
-// question or an existing answer).
-function closeIfStillOpen(agentId: string, question: SpoolFile["question"], marker: string): void {
+// question or an existing answer). Returns true when the write happened.
+function closeIfStillOpen(agentId: string, question: SpoolFile["question"], marker: string): boolean {
   const current = readSpool(agentId);
   if (current && current.question.id === question.id && !current.question.answered) {
     writeSpool(agentId, {
@@ -87,7 +88,9 @@ function closeIfStillOpen(agentId: string, question: SpoolFile["question"], mark
         answer: { choice: [], other: marker, answeredAt: Date.now() },
       },
     });
+    return true;
   }
+  return false;
 }
 
 function normalizeOptions(raw: unknown): NormalizedOption[] {
@@ -178,7 +181,9 @@ export default function (pi: ExtensionAPI) {
         // dead process or a test spike. Supersede it (a foreign live poller
         // sees the marker and returns promptly) instead of blocking forever.
         // closeIfStillOpen re-reads and re-checks so a human answer that
-        // landed between our read and this write is never clobbered.
+        // landed between our read and this write is never clobbered. The old
+        // card may linger looking open until tapped; that beats a sleep-based
+        // flip, which reopened a seconds-wide lost-update window (roast r3).
         closeIfStillOpen(agentId, open.question, SUPERSEDED_MARKER);
       }
 
@@ -226,6 +231,16 @@ export default function (pi: ExtensionAPI) {
                 ],
               };
             }
+            if (a.other === OVERTAKEN_MARKER) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `ask_user: the user typed a new message instead of answering the question "${params.question}". Their message follows; act on it rather than re-asking.`,
+                  },
+                ],
+              };
+            }
             const chosen = a.choice.map((k) => options.find((o) => o.key === k)?.label ?? k);
             const parts: string[] = [];
             if (a.lead) parts.push(`lead: ${options.find((o) => o.key === a.lead)?.label ?? a.lead}`);
@@ -254,15 +269,35 @@ export default function (pi: ExtensionAPI) {
         }
 
         // Timed out: close the question so the next one is not blocked, and
-        // leave an honest trace in the row.
-        writeSpool(agentId, {
-          v: 1,
-          question: {
-            ...file.question,
-            answered: true,
-            answer: { choice: [], other: "(timed out with no answer)", answeredAt: Date.now() },
-          },
-        });
+        // leave an honest trace in the row. Guarded re-read: an answer or a
+        // newer question that landed during the final poll sleep must never
+        // be clobbered; if the question was actually answered, return that.
+        if (!closeIfStillOpen(agentId, file.question, "(timed out with no answer)")) {
+          const last = readSpool(agentId);
+          if (last && last.question.id === id && last.question.answered && last.question.answer) {
+            const a = last.question.answer;
+            if (a.other === SUPERSEDED_MARKER || a.other === OVERTAKEN_MARKER) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `ask_user: the question "${params.question}" ended without a human answer just before the timeout (${a.other}). Proceed with your best judgment and tell the user what you chose.`,
+                  },
+                ],
+              };
+            }
+            const chosen = a.choice.map((k) => options.find((o) => o.key === k)?.label ?? k);
+            const parts: string[] = [];
+            if (a.lead) parts.push(`lead: ${options.find((o) => o.key === a.lead)?.label ?? a.lead}`);
+            if (chosen.length > 0) parts.push(`chosen: ${chosen.join("; ")}`);
+            if (a.other) parts.push(`other: ${a.other}`);
+            const text =
+              parts.length > 0
+                ? `The user answered the question "${params.question}" just before the timeout.\n${parts.join("\n")}`
+                : `The user answered the question "${params.question}" without picking an option or writing text.`;
+            return { content: [{ type: "text", text }] };
+          }
+        }
         return {
           content: [
             {

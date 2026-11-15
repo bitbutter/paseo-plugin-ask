@@ -26,6 +26,7 @@ const FAILED_RETRY_MS = 60 * 1000;
 // SUPERSEDED_MARKER (same literal in ask-user/index.ts) and phrases it for
 // the model instead of "the user answered".
 const SUPERSEDED_MARKER = "(superseded by a newer question)";
+const OVERTAKEN_MARKER = "(user typed a message instead of answering)";
 const EXPIRED_MARKER = "(expired with no answer; the asking process is gone)";
 
 // One row per question, identified per-question: `pluginId/rowId` is the
@@ -96,7 +97,7 @@ export function registerAskHandlers(server: PluginServerContext): void {
     const answered: AskQuestionData = {
       ...file.question,
       answered: true,
-      answer: { choice: input.choice, other: input.other, answeredAt: Date.now() },
+      answer: { choice: input.choice, other: input.other, lead: input.lead, answeredAt: Date.now() },
     };
     writeSpool(input.agentId, { v: 1, question: answered });
     try {
@@ -183,10 +184,31 @@ export function startAskWatcher(server: PluginServerContext): () => void {
   };
   // agentId -> { id, at } of the last successful row append
   const appended = new Map<string, { id: string; at: number }>();
+  // Question ids whose OPEN row this watcher run appended. The closed-card
+  // flip only applies to these: rows from before a daemon restart are gone
+  // from the timeline, and re-appending them would CREATE a stale card at
+  // the bottom instead of replacing one (identity absent = insert).
+  const openAppendedIds = new Set<string>();
   // agentId -> question id whose CLOSED state has been appended once, so
   // file-only terminal writes (extension timeout/cancel/supersede) still
   // flip their card instead of lingering as open and tappable
   const closedAppended = new Map<string, string>();
+
+  // Close an open question as overtaken (guarded, best-effort row flip).
+  const overtakeIfOpen = async (paseo: PaseoApi | null, agentId: string | null | undefined) => {
+    if (!paseo || !agentId) return;
+    const file = readSpool(agentId);
+    if (!file || file.question.answered) return;
+    const closed = closeQuestion(agentId, file.question, OVERTAKEN_MARKER);
+    if (!closed) return;
+    console.log(`[ask] question ${closed.id} for ${agentId} overtaken (new turn/message)`);
+    try {
+      await appendRow(paseo, closed);
+      closedAppended.set(agentId, closed.id);
+    } catch {
+      /* cosmetic; the file is terminal either way */
+    }
+  };
   // agentId -> { id, at } of the last failed append
   const failed = new Map<string, { id: string; at: number }>();
   // Agents whose timeline.append said "Unknown agent": skip their spool
@@ -205,11 +227,23 @@ export function startAskWatcher(server: PluginServerContext): () => void {
   server.before("agent.session_open", (request, context) => {
     capture(context);
     rearmAgent(request?.request?.agentId);
+    // An interactive session_open (agent respawn) while a question is open
+    // means the asking process died: close it as overtaken. purpose "history"
+    // is just a client viewing the timeline; it must not close anything.
+    const req = request?.request;
+    if (req && req.purpose !== "history") {
+      void overtakeIfOpen(context.paseo, req.agentId);
+    }
     return undefined;
   });
   server.on("agent.turn_started", (event, context) => {
     capture(context);
     rearmAgent(event?.agent?.id);
+    // A new turn starting while a question is still open means the question
+    // belongs to an earlier turn and the human kept typing instead of
+    // answering the card: close it as overtaken so any surviving poller
+    // returns promptly and the model reacts to the message instead.
+    void overtakeIfOpen(context.paseo, event?.agent?.id);
   });
   server.on("agent.turn_ended", (_event, context) => capture(context));
 
@@ -240,21 +274,29 @@ export function startAskWatcher(server: PluginServerContext): () => void {
             /* raced away */
           }
           closedAppended.delete(agentId);
+          openAppendedIds.delete(q.id);
         }
         // Terminal states written file-only by the extension (timeout,
         // cancel, stale-supersede) have no Paseo API to append their own row;
-        // flip the card here, once per question id. Idempotent replace for
-        // rows the RPC handlers already appended.
-        if (closedAppended.get(agentId) !== q.id) {
-          closedAppended.set(agentId, q.id);
+        // flip the card here, once per question id, and only for rows this
+        // watcher run opened (after a daemon restart the row is gone and a
+        // re-append would insert a stale card). Record the guard only after
+        // a successful append; retry at FAILED_RETRY_MS cadence on failure.
+        if (
+          openAppendedIds.has(q.id) &&
+          closedAppended.get(agentId) !== q.id &&
+          !(failed.get(agentId)?.id === q.id && now - (failed.get(agentId)?.at ?? 0) < FAILED_RETRY_MS)
+        ) {
           try {
             await appendRow(paseo, q);
-          } catch {
-            /* cosmetic only; do not retry into spam */
+            closedAppended.set(agentId, q.id);
+            failed.delete(agentId);
+          } catch (e) {
+            failed.set(agentId, { id: q.id, at: now });
+            console.error(`[ask] closed-card flip failed for ${agentId}: ${e instanceof Error ? e.message : String(e)}`);
           }
         }
         appended.delete(agentId);
-        failed.delete(agentId);
         continue;
       }
       // No poller can still be waiting (its own timeout would have closed
@@ -281,6 +323,7 @@ export function startAskWatcher(server: PluginServerContext): () => void {
       try {
         await appendRow(paseo, q);
         appended.set(agentId, { id: q.id, at: now });
+        openAppendedIds.add(q.id);
         failed.delete(agentId);
         console.log(`[ask] appended question ${q.id} for ${agentId}`);
       } catch (e) {
