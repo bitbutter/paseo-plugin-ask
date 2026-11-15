@@ -160,7 +160,12 @@ export function QuestionRow({ item, theme, layout }: PluginTimelineItemProps<Ask
     );
   }
 
-  const hintText = d.mode === "multi" ? "Mark all that apply, then Submit." : "Pick one. Or answer in your own words below.";
+  const hintText =
+    d.mode === "multi"
+      ? d.leadPick
+        ? "Mark all that apply, star the lead choice, then Submit."
+        : "Mark all that apply, then Submit."
+      : "Pick one. Or answer in your own words below.";
   const needsSubmit = d.mode === "multi";
 
   const optionGlyph = (key: string) => (d.mode === "multi" ? (picked.includes(key) ? "☑ " : "☐ ") : "");

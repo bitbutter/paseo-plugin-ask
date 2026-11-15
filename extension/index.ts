@@ -128,6 +128,19 @@ export default function (pi: ExtensionAPI) {
   // a refusal (anti-stacking).
   const liveAsks = new Set<string>();
 
+  // The user typed in the composer instead of tapping the card. While a
+  // question is open the turn is blocked, so the typed text arrives as a
+  // steer: close the question as overtaken now (guarded write). The pending
+  // tool call returns within a poll interval and the steered text delivers
+  // right after the tool call, so the model reads the actual message.
+  pi.on("input", async (event) => {
+    if (event.source === "extension") return;
+    const open = readSpool(agentId);
+    if (open && !open.question.answered) {
+      closeIfStillOpen(agentId, open.question, OVERTAKEN_MARKER);
+    }
+  });
+
   pi.registerTool({
     name: "ask_user",
     label: "Ask User",
