@@ -326,7 +326,11 @@ export function startAskWatcher(server: PluginServerContext): () => void {
       // unknown agent must not strand its question open forever.
       if (now - q.createdAt > OPEN_EXPIRE_MS) {
         const closed = closeQuestion(agentId, q, EXPIRED_MARKER);
-        if (closed) {
+        // Gate on openAppendedIds: after a daemon restart the row is gone and
+        // an unconditional append would CREATE a stale "(expired)" card at
+        // the bottom for an 8-day-old question (roast r6 confirmed; same
+        // reasoning as the flip gate above).
+        if (closed && openAppendedIds.has(q.id)) {
           try {
             await appendRow(paseo, closed); // re-render the row as closed; agent may be gone
           } catch {
