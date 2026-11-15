@@ -92,6 +92,19 @@ export function registerAskHandlers(server: PluginServerContext): void {
       throw new Error(`no open question ${input.questionId} for agent ${input.agentId}`);
     }
     if (file.question.answered) {
+      const other = file.question.answer?.other ?? "";
+      const terminal =
+        other === SUPERSEDED_MARKER ||
+        other === OVERTAKEN_MARKER ||
+        other === EXPIRED_MARKER ||
+        other.startsWith("(timed out") ||
+        other.startsWith("(cancelled");
+      if (terminal) {
+        // The recorded "answer" is a terminal marker, not a human choice.
+        // ok:true here made the client render a phantom confirmation for a
+        // tap that was discarded (roast r6).
+        throw new Error(`question ${input.questionId} already ended: ${other}`);
+      }
       return { ok: true }; // idempotent: an already-answered row just re-affirms
     }
     const answered: AskQuestionData = {
@@ -159,6 +172,13 @@ export function registerAskHandlers(server: PluginServerContext): void {
       createdAt: Date.now(),
       answered: false,
     };
+    // The awaited appendRow above yielded the event loop: a live ask_user
+    // in the extension process may have claimed the spool since our read.
+    // Never clobber it; the newest question always wins (roast r6).
+    const latest = readSpool(agentId);
+    if (existing && latest && latest.question.id !== existing.question.id) {
+      throw new Error(`ask.test: a newer question (${latest.question.id}) is live; not overwriting it`);
+    }
     writeSpool(agentId, { v: 1, question });
     await appendRow(ctx.paseo, question);
     return { ok: true, questionId: question.id };

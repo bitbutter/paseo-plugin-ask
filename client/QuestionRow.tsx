@@ -1,6 +1,6 @@
 import type { PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { askAnswerRpc, type AskQuestionData } from "../shared/ask";
 
@@ -27,6 +27,15 @@ export function QuestionRow({ item, theme, layout }: PluginTimelineItemProps<Ask
   const [sent, setSent] = useState<Sent | null>(
     d.answered && d.answer ? { choice: d.answer.choice, other: d.answer.other, lead: d.answer.lead } : null,
   );
+  // The Paseo projection updates item.data in place when the row is
+  // re-appended (another device answered, or a terminal flip landed). Sync
+  // the recorded answer so a mounted open card flips instead of staying
+  // tappable and phantom-confirming a discarded tap (roast r6).
+  useEffect(() => {
+    if (d.answered && d.answer) {
+      setSent({ choice: d.answer.choice, other: d.answer.other, lead: d.answer.lead });
+    }
+  }, [d.answered, d.answer]);
   const [error, setError] = useState<string | null>(null);
 
   const labelOf = (key: string) => d.options.find((o) => o.key === key)?.label ?? key;
