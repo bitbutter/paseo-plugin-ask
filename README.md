@@ -22,7 +22,6 @@ Every card includes an `Other` free-text field. One option may set `recommended:
 | `multi` | Checkboxes and a `Submit` button | Pick any number of options, then submit. |
 | `multi` with `leadPick` | Checkboxes, a star per option, and `Submit` | Marks one lead choice. Starring an option includes it. |
 
-![A multi-select question card with a recommended option](assets/demo-multi.png)
 ![A single-mode question card: immediate buttons, one recommended option in green](assets/demo-single.png)
 Compact option sets flow into a two-column grid; the Submit button uses the success color:
 
