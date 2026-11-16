@@ -141,7 +141,9 @@ export function QuestionRow({ item, theme, layout }: PluginTimelineItemProps<Ask
         paddingVertical: 9,
         paddingHorizontal: 12,
         borderRadius: 8,
-        backgroundColor: theme.colors.accent,
+        // Commit actions are green (statusSuccess); checked options use the
+        // accent color so the two never read as the same state (tk, 2026-11-15).
+        backgroundColor: theme.colors.statusSuccess,
         alignItems: "center" as const,
         opacity: busy ? 0.6 : 1,
       },
