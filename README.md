@@ -24,6 +24,9 @@ Every card includes an `Other` free-text field. One option may set `recommended:
 
 ![A multi-select question card with a recommended option](assets/demo-multi.png)
 ![A single-mode question card: immediate buttons, one recommended option in green](assets/demo-single.png)
+Compact option sets flow into a two-column grid; the Submit button uses the success color:
+
+![A multi-select question card with options in a two-column grid and a green Submit button](assets/demo-grid.png)
 
 ## Architecture
 
