@@ -2,6 +2,8 @@
 
 `paseo-plugin-ask` is a questions widget for [Paseo](https://paseo.sh) agents, shipped as two parts in one repository: a Paseo daemon plugin at the root and a [pi](https://github.com/earendil-works/pi) extension in `extension/`. It gives an agent an `ask_user` tool that renders a tappable card with 2 to 6 options in the Paseo timeline on desktop and mobile.
 
+Vibecoded: an AI agent wrote and debugged this end to end, steered by one human.
+
 ## How `ask_user` works
 
 The model calls `ask_user` with one short question and 2 to 6 options. The call blocks until the human answers or the timeout passes (default 24 hours, max 7 days), then returns the answer as the tool result. On timeout, the tool result tells the model to proceed with its best judgment. Typing a message in the composer instead of tapping the card closes the question and tells the model to read the message.
