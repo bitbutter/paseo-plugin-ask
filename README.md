@@ -2,7 +2,7 @@
 
 `paseo-plugin-ask` is a questions widget for [Paseo](https://paseo.sh) agents, shipped as two parts in one repository: a Paseo daemon plugin at the root and a [pi](https://github.com/earendil-works/pi) extension in `extension/`. It gives an agent an `ask_user` tool that renders a tappable card with 2 to 6 options in the Paseo timeline on desktop and mobile.
 
-Vibecoded: an AI agent wrote and debugged this end to end, steered by one human.
+Vibecoded: an AI agent wrote and debugged this end to end, directed by me.
 
 ## How `ask_user` works
 
