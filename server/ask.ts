@@ -114,6 +114,18 @@ export function registerAskHandlers(server: PluginServerContext): void {
         // tap that was discarded (roast r6).
         throw new Error(`question ${input.questionId} already ended: ${other}`);
       }
+      // A second client submitting a DIFFERENT choice must learn it was
+      // discarded, not receive ok:true and render a phantom confirmation
+      // (roast r10). Identical resubmission stays an idempotent ok.
+      const a = file.question.answer;
+      const sameChoice = JSON.stringify([...(input.choice ?? [])].sort()) === JSON.stringify([...(a?.choice ?? [])].sort());
+      const sameOther = (input.other ?? "") === (a?.other ?? "");
+      const sameLead = (input.lead ?? null) === (a?.lead ?? null);
+      if (!(sameChoice && sameOther && sameLead)) {
+        throw new Error(
+          `question ${input.questionId} was already answered differently (recorded: ${JSON.stringify({ choice: a?.choice, other: a?.other, lead: a?.lead })}); this submission was discarded`,
+        );
+      }
       return { ok: true }; // idempotent: an already-answered row just re-affirms
     }
     const answered: AskQuestionData = {
@@ -133,6 +145,7 @@ export function registerAskHandlers(server: PluginServerContext): void {
   server.handle(askTestRpc, async (input, ctx: PluginHandlerContext) => {
     const agentId = input.agentId;
     const existing = readSpool(agentId);
+    let supersededAny = false;
     if (existing && !existing.question.answered) {
       // Supersede instead of refusing: an open question whose card was lost
       // (daemon restart or timeline refetch drops plugin rows) must never
@@ -140,6 +153,7 @@ export function registerAskHandlers(server: PluginServerContext): void {
       // not linger as a clickable card. closeQuestion re-validates; if it
       // raced against a newer writer, that writer wins and we skip.
       const closed = closeQuestion(agentId, existing.question, SUPERSEDED_MARKER);
+      supersededAny = closed !== null;
       if (closed && openAppendedIds.has(closed.id)) {
         try {
           await appendRow(ctx.paseo, closed);
@@ -181,25 +195,30 @@ export function registerAskHandlers(server: PluginServerContext): void {
       createdAt: Date.now(),
       answered: false,
     };
-    // The awaited appendRow above yielded the event loop: a live ask_user
-    // in the extension process may have claimed the spool since our read,
-    // or the human may have answered the old question mid-window. Proceed
-    // only when the spool still holds exactly what we left (no file, or our
-    // own superseded marker); never clobber anything newer (roast r7).
+    // Re-validate after the awaited appendRow above (the event loop yielded:
+    // a live ask_user or an answer may have claimed the spool). What counts
+    // as "still ours" depends on what we did: if we superseded, the file must
+    // still hold our marker; if the prior question was already terminal, the
+    // file must simply still hold that same question (roast r10: requiring
+    // the marker unconditionally locked ask.test out for the answered TTL).
     const latest = readSpool(agentId);
-    const spoolStillOurs = existing
+    const spoolStillOurs = supersededAny
       ? Boolean(
           latest &&
-            latest.question.id === existing.question.id &&
+            latest.question.id === existing?.question.id &&
             latest.question.answered &&
             latest.question.answer?.other === SUPERSEDED_MARKER,
         )
-      : !latest;
+      : existing
+        ? Boolean(latest && latest.question.id === existing.question.id)
+        : !latest;
     if (!spoolStillOurs) {
       throw new Error(`ask.test: the spool changed during the test setup (newer question or answer landed); not overwriting it`);
     }
     writeSpool(agentId, { v: 1, question });
     await appendRow(ctx.paseo, question);
+    // Register the test card so supersede/overtake paths can flip it (roast r10).
+    openAppendedIds.add(question.id);
     return { ok: true, questionId: question.id };
   });
 }
@@ -245,7 +264,9 @@ export function startAskWatcher(server: PluginServerContext): () => void {
       if (openAppendedIds.has(closed.id)) {
         try {
           await appendRow(paseo, closed);
-          closedAppended.set(agentId, closed.id);
+          // Do NOT set closedAppended here: a concurrent tick may still be
+          // mid-flight appending the OPEN row; marking it closed now would
+          // stop the answered-branch flip from repairing the card (roast r10).
         } catch {
           /* cosmetic; the file is terminal either way */
         }
@@ -292,7 +313,11 @@ export function startAskWatcher(server: PluginServerContext): () => void {
   });
   server.on("agent.turn_ended", (_event, context) => capture(context));
 
+  let ticking = false;
   const tick = async (): Promise<void> => {
+    if (ticking) return; // overlapping ticks duplicate appends and race the maps (roast r10)
+    ticking = true;
+    try {
     if (!paseo) return;
     let names: string[];
     try {
@@ -375,6 +400,13 @@ export function startAskWatcher(server: PluginServerContext): () => void {
         openAppendedIds.add(q.id);
         failed.delete(agentId);
         console.log(`[ask] appended question ${q.id} for ${agentId}`);
+        // The await let overtake/answer close this question meanwhile; drop
+        // our bookkeeping so the answered-branch flip repairs the card on the
+        // next tick instead of leaving a terminal question rendered open (roast r10).
+        const after = readSpool(agentId);
+        if (!after || after.question.id !== q.id || after.question.answered) {
+          appended.delete(agentId);
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         failed.set(agentId, { id: q.id, at: now });
@@ -385,6 +417,9 @@ export function startAskWatcher(server: PluginServerContext): () => void {
           console.error(`[ask] append failed for ${agentId}: ${msg}`);
         }
       }
+    }
+    } finally {
+      ticking = false;
     }
   };
   const timer = setInterval(() => {

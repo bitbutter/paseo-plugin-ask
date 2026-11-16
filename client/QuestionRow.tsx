@@ -42,6 +42,10 @@ export function QuestionRow({ item, theme, layout }: PluginTimelineItemProps<Ask
 
   const send = async (choice: string[], otherText?: string, leadKey?: string | null) => {
     if (busy || sent) return;
+    const otherTrim = (otherText ?? "").trim();
+    // Single mode: an empty Send (no option tapped, whitespace-only Other) is
+    // a mis-tap, not an answer; do nothing instead of closing the question (roast r10).
+    if (d.mode !== "multi" && choice.length === 0 && otherTrim.length === 0) return;
     setBusy(true);
     setError(null);
     try {
@@ -52,7 +56,7 @@ export function QuestionRow({ item, theme, layout }: PluginTimelineItemProps<Ask
         other: otherText && otherText.trim().length > 0 ? otherText.trim() : undefined,
         lead: leadKey ?? undefined,
       });
-      setSent({ choice, other: otherText, lead: leadKey ?? undefined });
+      setSent({ choice, other: otherTrim.length > 0 ? otherTrim : undefined, lead: leadKey ?? undefined });
     } catch (e) {
       setError(String((e as Error)?.message ?? e));
     } finally {

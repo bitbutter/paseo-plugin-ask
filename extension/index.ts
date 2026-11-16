@@ -25,6 +25,7 @@ const DEFAULT_TIMEOUT_SEC = 24 * 60 * 60;
 const SUPERSEDED_MARKER = "(superseded by a newer question)";
 const OVERTAKEN_MARKER = "(user typed a message instead of answering)";
 const CANCELLED_MARKER = "(cancelled before an answer)";
+const EXPIRED_MARKER = "(expired with no answer; the asking process is gone)";
 
 interface NormalizedOption {
   key: string;
@@ -310,7 +311,12 @@ export default function (pi: ExtensionAPI) {
           const last = readSpool(agentId);
           if (last && last.question.id === id && last.question.answered && last.question.answer) {
             const a = last.question.answer;
-            if (a.other === SUPERSEDED_MARKER || a.other === OVERTAKEN_MARKER) {
+            if (
+              a.other === SUPERSEDED_MARKER ||
+              a.other === OVERTAKEN_MARKER ||
+              a.other === CANCELLED_MARKER ||
+              a.other === EXPIRED_MARKER
+            ) {
               return {
                 content: [
                   {
