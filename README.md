@@ -2,12 +2,6 @@
 
 `paseo-plugin-ask` is a questions widget for [Paseo](https://paseo.sh) agents, shipped as two parts in one repository: a Paseo daemon plugin at the root and a [pi](https://github.com/earendil-works/pi) extension in `extension/`. It gives an agent an `ask_user` tool that renders a tappable card with 2 to 6 options in the Paseo timeline on desktop and mobile.
 
-## What Paseo already does
-
-Paseo renders ask-style questions natively when a tool uses pi's dialog protocol: a question card with options, freeform, and an optional comment. Pi ships no tool that speaks that protocol, and the public extension API has no dialog primitive (checked against the pi 0.85 type surface), so an extension cannot reach the native card today. This project supplies both halves: the `ask_user` tool and its own card.
-
-The custom card adds what the native question dialog does not have: multi-select with a single Submit, a star to mark a lead choice, a recommended option rendered green, one card per question in the agent timeline, and answers on a file bus that scripts can write.
-
 ## How `ask_user` works
 
 The model calls `ask_user` with one short question and 2 to 6 options. The call blocks until the human answers or the timeout passes (default 24 hours, max 7 days), then returns the answer as the tool result. On timeout, the tool result tells the model to proceed with its best judgment. Typing a message in the composer instead of tapping the card closes the question and tells the model to read the message.
