@@ -79,8 +79,23 @@ export function QuestionRow({ item, theme, layout }: PluginTimelineItemProps<Ask
     return void send([...picked], other, lead);
   };
 
-  const styles = useMemo(
-    () => ({
+  // Two-column wrap for compact option sets: no lead stars, 4+ options, and
+  // every label short enough to survive half-width without wrapping mid-word
+  // (tk, 2026-11-15). Long labels and leadPick keep the stacked full-width rows.
+  const useGrid =
+    !(d.mode === "multi" && d.leadPick) && d.options.length >= 4 && d.options.every((o) => o.label.length <= 22);
+
+  const styles = useMemo(() => {
+    const option = (pickedNow: boolean, recommended: boolean) => ({
+      paddingVertical: 8,
+      paddingHorizontal: 10,
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: recommended ? theme.colors.statusSuccess : pickedNow ? theme.colors.accent : theme.colors.border,
+      backgroundColor: pickedNow ? theme.colors.accent : theme.colors.surface1,
+      opacity: busy ? 0.6 : 1,
+    });
+    return {
       card: {
         backgroundColor: theme.colors.surface1,
         borderColor: theme.colors.border,
@@ -92,14 +107,12 @@ export function QuestionRow({ item, theme, layout }: PluginTimelineItemProps<Ask
       question: { color: theme.colors.foreground, fontSize: layout.compact ? 14 : 15, fontWeight: "600" as const },
       hint: { color: theme.colors.foregroundMuted, fontSize: 12 },
       optionRow: { flexDirection: "row" as const, gap: 6, alignItems: "center" as const },
-      option: (pickedNow: boolean, recommended: boolean) => ({
-        paddingVertical: 8,
-        paddingHorizontal: 10,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: recommended ? theme.colors.statusSuccess : pickedNow ? theme.colors.accent : theme.colors.border,
-        backgroundColor: pickedNow ? theme.colors.accent : theme.colors.surface1,
-        opacity: busy ? 0.6 : 1,
+      option,
+      grid: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 6 },
+      gridOption: (pickedNow: boolean, recommended: boolean) => ({
+        ...option(pickedNow, recommended),
+        width: "48%" as const,
+        alignItems: "center" as const,
       }),
       optionText: (pickedNow: boolean, recommended: boolean) => ({
         color: pickedNow ? theme.colors.accentForeground : recommended ? theme.colors.statusSuccess : theme.colors.foreground,
@@ -149,9 +162,8 @@ export function QuestionRow({ item, theme, layout }: PluginTimelineItemProps<Ask
       },
       answeredLine: { color: theme.colors.statusSuccess, fontSize: 13, fontWeight: "600" as const },
       error: { color: theme.colors.foregroundMuted, fontSize: 12 },
-    }),
-    [theme, layout.compact, busy],
-  );
+    };
+  }, [theme, layout.compact, busy]);
 
   if (sent) {
     return (
@@ -186,7 +198,33 @@ export function QuestionRow({ item, theme, layout }: PluginTimelineItemProps<Ask
     <View style={styles.card}>
       <Text style={styles.question}>{d.question}</Text>
       <Text style={styles.hint}>{hintText}</Text>
-      {d.options.map((o) => {
+      {useGrid ? (
+        <View style={styles.grid}>
+          {d.options.map((o) => {
+            const on = d.mode === "multi" ? picked.includes(o.key) : false;
+            return (
+              <Pressable
+                key={o.key}
+                accessibilityRole="button"
+                accessibilityLabel={o.recommended ? `${o.label} (recommended)` : o.label}
+                disabled={busy}
+                onPress={() => {
+                  if (d.mode === "multi") toggle(o.key);
+                  else void send([o.key]);
+                }}
+                style={styles.gridOption(on, o.recommended === true)}
+              >
+                <Text style={styles.optionText(on, o.recommended === true)}>
+                  {optionGlyph(o.key)}
+                  {o.recommended === true ? "★ " : ""}
+                  {o.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      ) : (
+        d.options.map((o) => {
         const on = d.mode === "multi" ? picked.includes(o.key) : false;
         return (
           <View key={o.key} style={styles.optionRow}>
@@ -219,7 +257,8 @@ export function QuestionRow({ item, theme, layout }: PluginTimelineItemProps<Ask
             ) : null}
           </View>
         );
-      })}
+        })
+      )}
       <View style={styles.otherRow}>
         <TextInput
           accessibilityLabel="Other answer"
